@@ -1,0 +1,180 @@
+name: Okular Android ARMv7
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - master
+  pull_request:
+    branches:
+      - master
+
+jobs:
+  build:
+    name: Build Okular - armeabi-v7a
+    runs-on: ubuntu-24.04
+
+    env:
+      ANDROID_ABI: armeabi-v7a
+      ANDROID_PLATFORM: android-26
+      BUILD_TYPE: Release
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          submodules: recursive
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /usr/local/share/powershell
+          df -h
+
+      - name: Install host dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            cmake \
+            ninja-build \
+            git \
+            curl \
+            wget \
+            unzip \
+            zip \
+            python3 \
+            python3-pip \
+            openjdk-17-jdk \
+            pkg-config
+
+      - name: Set Java
+        run: |
+          echo "JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64" >> "$GITHUB_ENV"
+          echo "/usr/lib/jvm/java-17-openjdk-amd64/bin" >> "$GITHUB_PATH"
+
+      - name: Install Android SDK command line tools
+        env:
+          ANDROID_HOME: ${{ github.workspace }}/android-sdk
+        run: |
+          mkdir -p "$ANDROID_HOME/cmdline-tools"
+
+          cd "$ANDROID_HOME/cmdline-tools"
+
+          wget -q \
+            https://dl.google.com/android/repository/commandlinetools-linux-13114758_latest.zip \
+            -O cmdline-tools.zip
+
+          unzip -q cmdline-tools.zip
+          rm cmdline-tools.zip
+
+          mv cmdline-tools latest
+
+          echo "ANDROID_HOME=$ANDROID_HOME" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$ANDROID_HOME" >> "$GITHUB_ENV"
+          echo "$ANDROID_HOME/cmdline-tools/latest/bin" >> "$GITHUB_PATH"
+          echo "$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
+          echo "$ANDROID_HOME/emulator" >> "$GITHUB_PATH"
+
+      - name: Install Android SDK components
+        run: |
+          yes | sdkmanager --licenses >/dev/null || true
+
+          sdkmanager \
+            "platform-tools" \
+            "platforms;android-35" \
+            "build-tools;35.0.0"
+
+      - name: Install KDE Craft
+        env:
+          CRAFT_MASTER_LOCATION: ${{ github.workspace }}/CraftMaster
+          CRAFT_MASTER_CONFIG: ${{ github.workspace }}/craftmaster.ini
+        run: |
+          git clone \
+            --depth=1 \
+            https://invent.kde.org/packaging/craftmaster.git \
+            "$CRAFT_MASTER_LOCATION"
+
+          python3 \
+            "$CRAFT_MASTER_LOCATION/CraftMaster.py" \
+            --config "$CRAFT_MASTER_CONFIG" \
+            --target android-armv7 \
+            -c craft
+
+      - name: Configure Craft Android environment
+        env:
+          CRAFT_MASTER_LOCATION: ${{ github.workspace }}/CraftMaster
+          CRAFT_MASTER_CONFIG: ${{ github.workspace }}/craftmaster.ini
+        run: |
+          python3 \
+            "$CRAFT_MASTER_LOCATION/CraftMaster.py" \
+            --config "$CRAFT_MASTER_CONFIG" \
+            --target android-armv7 \
+            -c --version
+
+      - name: Install Okular dependencies
+        env:
+          CRAFT_MASTER_LOCATION: ${{ github.workspace }}/CraftMaster
+          CRAFT_MASTER_CONFIG: ${{ github.workspace }}/craftmaster.ini
+        run: |
+          python3 \
+            "$CRAFT_MASTER_LOCATION/CraftMaster.py" \
+            --config "$CRAFT_MASTER_CONFIG" \
+            --target android-armv7 \
+            -c --install-deps okular
+
+      - name: Configure Okular
+        env:
+          CRAFT_MASTER_LOCATION: ${{ github.workspace }}/CraftMaster
+          CRAFT_MASTER_CONFIG: ${{ github.workspace }}/craftmaster.ini
+        run: |
+          python3 \
+            "$CRAFT_MASTER_LOCATION/CraftMaster.py" \
+            --config "$CRAFT_MASTER_CONFIG" \
+            --target android-armv7 \
+            -c --build okular \
+            -- \
+            -DOKULAR_UI=mobile \
+            -DANDROID_ABI=armeabi-v7a \
+            -DANDROID_PLATFORM=android-26 \
+            -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build Okular
+        env:
+          CRAFT_MASTER_LOCATION: ${{ github.workspace }}/CraftMaster
+          CRAFT_MASTER_CONFIG: ${{ github.workspace }}/craftmaster.ini
+        run: |
+          python3 \
+            "$CRAFT_MASTER_LOCATION/CraftMaster.py" \
+            --config "$CRAFT_MASTER_CONFIG" \
+            --target android-armv7 \
+            -c --build okular
+
+      - name: Find APK
+        run: |
+          echo "Searching for APK..."
+          find . \
+            -type f \
+            \( -name "*.apk" -o -name "*.aab" \) \
+            -print
+
+      - name: Package build output
+        run: |
+          mkdir -p artifacts
+
+          find . \
+            -type f \
+            \( -name "*.apk" -o -name "*.aab" \) \
+            -exec cp {} artifacts/ \;
+
+          find artifacts -type f -print
+
+      - name: Upload Okular APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: okular-android-armeabi-v7a
+          path: artifacts/*
+          if-no-files-found: error
