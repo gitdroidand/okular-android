@@ -31,13 +31,11 @@ jobs:
           sudo rm -rf /usr/share/dotnet
           sudo rm -rf /opt/ghc
           sudo rm -rf /usr/local/share/powershell
-
           df -h
 
       - name: Install host dependencies
         run: |
           sudo apt-get update
-
           sudo apt-get install -y \
             git \
             curl \
@@ -59,9 +57,6 @@ jobs:
         run: |
           rm -rf "$CRAFT_ROOT"
           mkdir -p "$CRAFT_ROOT"
-
-          # The KDE container normally runs as an unprivileged user.
-          # Make the mounted workspace writable inside the container.
           sudo chmod -R a+rwx "$GITHUB_WORKSPACE"
 
       - name: Bootstrap Craft for Android ARM32
@@ -78,9 +73,9 @@ jobs:
               export HOME=/root
               export CRAFT_ROOT=/workspace/CraftRoot
 
-              echo "=== Android SDK ==="
-              echo "ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT:-}"
-              echo "ANDROID_HOME=${ANDROID_HOME:-}"
+              echo "========================================"
+              echo " Android SDK"
+              echo "========================================"
 
               if [ -z "${ANDROID_SDK_ROOT:-}" ] && [ -n "${ANDROID_HOME:-}" ]; then
                 export ANDROID_SDK_ROOT="$ANDROID_HOME"
@@ -102,14 +97,25 @@ jobs:
               test -d "$ANDROID_SDK_ROOT"
 
               echo
-              echo "=== Android NDK ==="
+              echo "========================================"
+              echo " Android NDK"
+              echo "========================================"
 
               if [ -z "${ANDROID_NDK:-}" ]; then
-                ANDROID_NDK="$(find /opt \
-                  -maxdepth 6 \
-                  -type d \
-                  \( -name 'android-ndk-*' -o -name 'ndk-*' \) \
-                  2>/dev/null | sort -V | tail -1 || true)"
+                ANDROID_NDK="$(
+                  find /opt \
+                    -maxdepth 7 \
+                    -type d \
+                    \( \
+                      -name "android-ndk-*" \
+                      -o \
+                      -name "ndk-*" \
+                    \) \
+                    2>/dev/null \
+                    | sort -V \
+                    | tail -1 \
+                    || true
+                )"
               fi
 
               export ANDROID_NDK
@@ -120,7 +126,9 @@ jobs:
               test -d "$ANDROID_NDK"
 
               echo
-              echo "=== Bootstrap Craft ==="
+              echo "========================================"
+              echo " Craft Bootstrap"
+              echo "========================================"
 
               curl -fsSL \
                 https://invent.kde.org/packaging/craft/-/raw/master/setup/CraftBootstrap.py \
@@ -131,26 +139,79 @@ jobs:
                 --use-defaults
 
               echo
-              echo "=== Craft settings before ARM32 override ==="
+              echo "========================================"
+              echo " Craft directory"
+              echo "========================================"
 
-              cat "$CRAFT_ROOT/etc/CraftSettings.ini"
-
-              echo
-              echo "=== Force Android ARM32 / armeabi-v7a ==="
-
-              sed -i \
-                "s|^[[:space:]]*ABI[[:space:]]*=.*|ABI = android-clang-arm32|" \
-                "$CRAFT_ROOT/etc/CraftSettings.ini"
-
-              grep -n "^ABI" \
-                "$CRAFT_ROOT/etc/CraftSettings.ini"
-
-              test "$(grep -E "^ABI[[:space:]]*=" "$CRAFT_ROOT/etc/CraftSettings.ini" | head -1 | sed "s/.*=[[:space:]]*//")" = "android-clang-arm32"
+              find "$CRAFT_ROOT" \
+                -maxdepth 4 \
+                -type f \
+                \( \
+                  -name "craft.py" \
+                  -o \
+                  -name "craftenv.sh" \
+                \) \
+                -print
 
               echo
-              echo "=== Final Craft settings ==="
+              echo "========================================"
+              echo " Craft settings"
+              echo "========================================"
 
-              cat "$CRAFT_ROOT/etc/CraftSettings.ini"
+              cat "$CRAFT_ROOT/craft/etc/CraftSettings.ini" 2>/dev/null \
+                || cat "$CRAFT_ROOT/etc/CraftSettings.ini" 2>/dev/null \
+                || true
+
+              SETTINGS="$CRAFT_ROOT/craft/etc/CraftSettings.ini"
+
+              if [ ! -f "$SETTINGS" ]; then
+                SETTINGS="$CRAFT_ROOT/etc/CraftSettings.ini"
+              fi
+
+              test -f "$SETTINGS"
+
+              echo
+              echo "========================================"
+              echo " Force Android ARM32"
+              echo "========================================"
+
+              if grep -qE "^[[:space:]]*ABI[[:space:]]*=" "$SETTINGS"; then
+                sed -i \
+                  "s|^[[:space:]]*ABI[[:space:]]*=.*|ABI = android-clang-arm32|" \
+                  "$SETTINGS"
+              else
+                printf "\\nABI = android-clang-arm32\\n" >> "$SETTINGS"
+              fi
+
+              grep -E "^[[:space:]]*ABI[[:space:]]*=" "$SETTINGS"
+
+              test "$(
+                grep -E "^[[:space:]]*ABI[[:space:]]*=" "$SETTINGS" \
+                | head -1 \
+                | sed "s/.*=[[:space:]]*//"
+              )" = "android-clang-arm32"
+
+              echo
+              echo "========================================"
+              echo " Final Craft settings"
+              echo "========================================"
+
+              cat "$SETTINGS"
+
+              echo
+              echo "========================================"
+              echo " Craft files"
+              echo "========================================"
+
+              find "$CRAFT_ROOT/craft" \
+                -maxdepth 3 \
+                -type f \
+                \( \
+                  -name "craft.py" \
+                  -o \
+                  -name "craftenv.sh" \
+                \) \
+                -print
             '
 
       - name: Verify Android ARM32 toolchain
@@ -167,33 +228,88 @@ jobs:
               export HOME=/root
               export CRAFT_ROOT=/workspace/CraftRoot
 
-              if [ -f "$CRAFT_ROOT/craftenv.sh" ]; then
-                source "$CRAFT_ROOT/craftenv.sh"
+              echo "========================================"
+              echo " Craft environment"
+              echo "========================================"
+
+              CRAFT_ENV="$CRAFT_ROOT/craft/craftenv.sh"
+
+              if [ ! -f "$CRAFT_ENV" ]; then
+                CRAFT_ENV="$CRAFT_ROOT/craftenv.sh"
               fi
 
-              echo "=== ABI ==="
-              grep -E "^ABI[[:space:]]*=" \
-                "$CRAFT_ROOT/etc/CraftSettings.ini"
+              test -f "$CRAFT_ENV"
+
+              source "$CRAFT_ENV"
 
               echo
-              echo "=== Craft ==="
-              "$CRAFT_ROOT/bin/craft" --version
+              echo "========================================"
+              echo " Craft ABI"
+              echo "========================================"
+
+              SETTINGS="$CRAFT_ROOT/craft/etc/CraftSettings.ini"
+
+              if [ ! -f "$SETTINGS" ]; then
+                SETTINGS="$CRAFT_ROOT/etc/CraftSettings.ini"
+              fi
+
+              grep -E "^[[:space:]]*ABI[[:space:]]*=" "$SETTINGS"
 
               echo
-              echo "=== Android environment ==="
+              echo "========================================"
+              echo " Craft executable"
+              echo "========================================"
+
+              if command -v craft >/dev/null 2>&1; then
+                CRAFT_BIN="$(command -v craft)"
+              elif [ -f "$CRAFT_ROOT/craft/bin/craft.py" ]; then
+                CRAFT_BIN="python3 $CRAFT_ROOT/craft/bin/craft.py"
+              else
+                echo "ERROR: Craft executable not found."
+
+                find "$CRAFT_ROOT" \
+                  -type f \
+                  \( \
+                    -name "craft.py" \
+                    -o \
+                    -name "craftenv.sh" \
+                  \) \
+                  -print
+
+                exit 1
+              fi
+
+              echo "CRAFT_BIN=$CRAFT_BIN"
+
+              if command -v craft >/dev/null 2>&1; then
+                craft --version
+              else
+                python3 "$CRAFT_ROOT/craft/bin/craft.py" --version
+              fi
+
+              echo
+              echo "========================================"
+              echo " Android environment"
+              echo "========================================"
+
               echo "ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT:-}"
+              echo "ANDROID_HOME=${ANDROID_HOME:-}"
               echo "ANDROID_NDK=${ANDROID_NDK:-}"
 
               echo
-              echo "=== ARM32 compiler candidates ==="
+              echo "========================================"
+              echo " ARM32 compiler"
+              echo "========================================"
 
               find "${ANDROID_NDK:-/nonexistent}" \
                 -type f \
                 \( \
                   -name "armv7a-linux-androideabi*-clang" \
-                  -o -name "arm-linux-androideabi-gcc" \
+                  -o \
+                  -name "arm-linux-androideabi-gcc" \
                 \) \
-                2>/dev/null | head -20 || true
+                -print \
+                | head -20 || true
             '
 
       - name: Build Okular
@@ -210,37 +326,79 @@ jobs:
               export HOME=/root
               export CRAFT_ROOT=/workspace/CraftRoot
 
-              source "$CRAFT_ROOT/craftenv.sh"
+              echo "========================================"
+              echo " Loading Craft environment"
+              echo "========================================"
 
+              CRAFT_ENV="$CRAFT_ROOT/craft/craftenv.sh"
+
+              if [ ! -f "$CRAFT_ENV" ]; then
+                CRAFT_ENV="$CRAFT_ROOT/craftenv.sh"
+              fi
+
+              test -f "$CRAFT_ENV"
+
+              source "$CRAFT_ENV"
+
+              echo
               echo "========================================"
               echo " Craft ABI"
               echo "========================================"
 
-              grep -E "^ABI[[:space:]]*=" \
-                "$CRAFT_ROOT/etc/CraftSettings.ini"
+              SETTINGS="$CRAFT_ROOT/craft/etc/CraftSettings.ini"
+
+              if [ ! -f "$SETTINGS" ]; then
+                SETTINGS="$CRAFT_ROOT/etc/CraftSettings.ini"
+              fi
+
+              grep -E "^[[:space:]]*ABI[[:space:]]*=" "$SETTINGS"
+
+              echo
+              echo "========================================"
+              echo " Craft"
+              echo "========================================"
+
+              if command -v craft >/dev/null 2>&1; then
+                CRAFT_BIN="craft"
+                craft --version
+              else
+                CRAFT_BIN="python3 $CRAFT_ROOT/craft/bin/craft.py"
+                python3 "$CRAFT_ROOT/craft/bin/craft.py" --version
+              fi
 
               echo
               echo "========================================"
               echo " Building Okular"
               echo "========================================"
 
-              craft \
-                --no-cache \
-                --options "[CodeSigning]Enabled=False" \
-                --options "okular.srcDir=/workspace" \
-                okular
+              if [ "$CRAFT_BIN" = "craft" ]; then
+                craft \
+                  --no-cache \
+                  --options "[CodeSigning]Enabled=False" \
+                  --options "okular.srcDir=/workspace" \
+                  okular
+              else
+                python3 "$CRAFT_ROOT/craft/bin/craft.py" \
+                  --no-cache \
+                  --options "[CodeSigning]Enabled=False" \
+                  --options "okular.srcDir=/workspace" \
+                  okular
+              fi
             '
 
       - name: Locate APK
         if: always()
         run: |
-          echo "=== APK/AAB files ==="
+          echo "========================================"
+          echo " APK / AAB files"
+          echo "========================================"
 
           find "$GITHUB_WORKSPACE" \
             -type f \
             \( \
               -name "*.apk" \
-              -o -name "*.aab" \
+              -o \
+              -name "*.aab" \
             \) \
             -print
 
@@ -249,26 +407,29 @@ jobs:
         run: |
           set -eux
 
-          APK="$(find "$GITHUB_WORKSPACE" \
-            -type f \
-            -name "*.apk" \
-            | head -1)"
+          APK="$(
+            find "$GITHUB_WORKSPACE" \
+              -type f \
+              -name "*.apk" \
+              | head -1
+          )"
 
           test -n "$APK"
           test -f "$APK"
 
           echo "APK: $APK"
 
-          sudo apt-get update
-          sudo apt-get install -y unzip
-
           rm -rf /tmp/okular-apk-check
           mkdir -p /tmp/okular-apk-check
 
-          unzip -l "$APK" | tee /tmp/okular-apk-list.txt
+          unzip -l "$APK" \
+            | tee /tmp/okular-apk-list.txt
 
-          if ! grep -q "lib/armeabi-v7a/" /tmp/okular-apk-list.txt; then
+          if ! grep -q "lib/armeabi-v7a/" \
+            /tmp/okular-apk-list.txt; then
+
             echo "::error::APK does not contain armeabi-v7a native libraries."
+
             exit 1
           fi
 
@@ -303,6 +464,16 @@ jobs:
           find "$GITHUB_WORKSPACE" \
             -type f \
             -path "*/logs/*" \
+            -exec cp --parents {} artifacts/logs/ \; \
+            || true
+
+          find "$GITHUB_WORKSPACE" \
+            -type f \
+            \( \
+              -name "*.log" \
+              -o \
+              -name "CMakeCache.txt" \
+            \) \
             -exec cp --parents {} artifacts/logs/ \; \
             || true
 
