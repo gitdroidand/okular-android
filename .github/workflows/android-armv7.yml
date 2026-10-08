@@ -16,9 +16,7 @@ jobs:
 
     env:
       CRAFT_ROOT: ${{ github.workspace }}/CraftRoot
-      CRAFTMASTER_ROOT: ${{ github.workspace }}/craftmaster
-      CRAFT_BLUEPRINTS_ROOT: ${{ github.workspace }}/craft-blueprints-kde
-      CRAFT_PLATFORM: android-clang-arm32
+      KDE_ANDROID_IMAGE: invent-registry.kde.org/sysadmin/ci-images/android-qt611:latest
 
     steps:
       - name: Checkout Okular
@@ -42,199 +40,191 @@ jobs:
 
           sudo apt-get install -y \
             git \
-            python3 \
-            python3-pip \
-            python3-venv \
             curl \
             wget \
             unzip \
             zip \
             rsync \
+            ca-certificates \
             build-essential \
             ninja-build \
             cmake \
             pkg-config
 
-      # KDE's Android build environment expects a 64-bit Linux host.
-      # The actual target is ARM32 / armeabi-v7a.
-      - name: Prepare KDE Android Craft environment
+      - name: Pull KDE Android build image
         run: |
+          docker pull "$KDE_ANDROID_IMAGE"
+
+      - name: Prepare Craft directory
+        run: |
+          rm -rf "$CRAFT_ROOT"
           mkdir -p "$CRAFT_ROOT"
 
-          docker pull \
-            invent-registry.kde.org/sysadmin/ci-images/android-qt611
+          # The KDE container normally runs as an unprivileged user.
+          # Make the mounted workspace writable inside the container.
+          sudo chmod -R a+rwx "$GITHUB_WORKSPACE"
 
-      - name: Initialize Craft
+      - name: Bootstrap Craft for Android ARM32
         run: |
           docker run --rm \
+            --user 0:0 \
+            -e HOME=/root \
             -v "$GITHUB_WORKSPACE:/workspace" \
             -w /workspace \
-            invent-registry.kde.org/sysadmin/ci-images/android-qt611 \
+            "$KDE_ANDROID_IMAGE" \
             bash -lc '
-              set -eux
+              set -euxo pipefail
 
-              export HOME=/home/user
+              export HOME=/root
               export CRAFT_ROOT=/workspace/CraftRoot
 
-              mkdir -p "$CRAFT_ROOT"
+              echo "=== Android SDK ==="
+              echo "ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT:-}"
+              echo "ANDROID_HOME=${ANDROID_HOME:-}"
 
-              python3 -c "$(curl -fsSL https://invent.kde.org/packaging/craft/-/raw/master/setup/CraftBootstrap.py)" \
-                --prefix "$CRAFT_ROOT" \
-                --use-defaults
-            '
-
-      - name: Configure Craft for ARM32
-        run: |
-          docker run --rm \
-            -v "$GITHUB_WORKSPACE:/workspace" \
-            -w /workspace \
-            invent-registry.kde.org/sysadmin/ci-images/android-qt611 \
-            bash -lc '
-              set -eux
-
-              export HOME=/home/user
-              export ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-/opt/android-sdk}"
-              export ANDROID_HOME="$ANDROID_SDK_ROOT"
-
-              find /opt -maxdepth 4 -type d -name "android-ndk*" 2>/dev/null | head -20 || true
-
-              if [ -z "${ANDROID_NDK:-}" ]; then
-                ANDROID_NDK="$(find /opt -maxdepth 5 -type d -name "android-ndk*" 2>/dev/null | head -1 || true)"
-                export ANDROID_NDK
+              if [ -z "${ANDROID_SDK_ROOT:-}" ] && [ -n "${ANDROID_HOME:-}" ]; then
+                export ANDROID_SDK_ROOT="$ANDROID_HOME"
               fi
 
+              if [ -z "${ANDROID_SDK_ROOT:-}" ]; then
+                if [ -d /opt/android-sdk ]; then
+                  export ANDROID_SDK_ROOT=/opt/android-sdk
+                elif [ -d /opt/android ]; then
+                  export ANDROID_SDK_ROOT=/opt/android
+                fi
+              fi
+
+              export ANDROID_HOME="$ANDROID_SDK_ROOT"
+
               echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+
+              test -n "$ANDROID_SDK_ROOT"
+              test -d "$ANDROID_SDK_ROOT"
+
+              echo
+              echo "=== Android NDK ==="
+
+              if [ -z "${ANDROID_NDK:-}" ]; then
+                ANDROID_NDK="$(find /opt \
+                  -maxdepth 6 \
+                  -type d \
+                  \( -name 'android-ndk-*' -o -name 'ndk-*' \) \
+                  2>/dev/null | sort -V | tail -1 || true)"
+              fi
+
+              export ANDROID_NDK
+
               echo "ANDROID_NDK=$ANDROID_NDK"
 
               test -n "$ANDROID_NDK"
               test -d "$ANDROID_NDK"
 
-              rm -rf /workspace/CraftRoot
+              echo
+              echo "=== Bootstrap Craft ==="
 
-              python3 -c "$(curl -fsSL https://invent.kde.org/packaging/craft/-/raw/master/setup/CraftBootstrap.py)" \
-                --prefix /workspace/CraftRoot \
-                --dry-run /tmp/CraftSettings.ini
+              curl -fsSL \
+                https://invent.kde.org/packaging/craft/-/raw/master/setup/CraftBootstrap.py \
+                -o /tmp/CraftBootstrap.py
 
-              cat /tmp/CraftSettings.ini
+              python3 /tmp/CraftBootstrap.py \
+                --prefix "$CRAFT_ROOT" \
+                --use-defaults
+
+              echo
+              echo "=== Craft settings before ARM32 override ==="
+
+              cat "$CRAFT_ROOT/etc/CraftSettings.ini"
+
+              echo
+              echo "=== Force Android ARM32 / armeabi-v7a ==="
+
+              sed -i \
+                "s|^[[:space:]]*ABI[[:space:]]*=.*|ABI = android-clang-arm32|" \
+                "$CRAFT_ROOT/etc/CraftSettings.ini"
+
+              grep -n "^ABI" \
+                "$CRAFT_ROOT/etc/CraftSettings.ini"
+
+              test "$(grep -E "^ABI[[:space:]]*=" "$CRAFT_ROOT/etc/CraftSettings.ini" | head -1 | sed "s/.*=[[:space:]]*//")" = "android-clang-arm32"
+
+              echo
+              echo "=== Final Craft settings ==="
+
+              cat "$CRAFT_ROOT/etc/CraftSettings.ini"
             '
 
-      - name: Setup Craft ARM32
+      - name: Verify Android ARM32 toolchain
         run: |
           docker run --rm \
+            --user 0:0 \
+            -e HOME=/root \
             -v "$GITHUB_WORKSPACE:/workspace" \
             -w /workspace \
-            invent-registry.kde.org/sysadmin/ci-images/android-qt611 \
+            "$KDE_ANDROID_IMAGE" \
             bash -lc '
-              set -eux
+              set -euxo pipefail
 
-              export HOME=/home/user
-              export ANDROID_SDK_ROOT="${ANDROID_SDK_ROOT:-/opt/android-sdk}"
-              export ANDROID_HOME="$ANDROID_SDK_ROOT"
+              export HOME=/root
+              export CRAFT_ROOT=/workspace/CraftRoot
 
-              if [ -z "${ANDROID_NDK:-}" ]; then
-                ANDROID_NDK="$(find /opt -maxdepth 5 -type d -name "android-ndk*" 2>/dev/null | head -1 || true)"
-                export ANDROID_NDK
+              if [ -f "$CRAFT_ROOT/craftenv.sh" ]; then
+                source "$CRAFT_ROOT/craftenv.sh"
               fi
 
-              test -n "$ANDROID_NDK"
-
-              rm -rf /workspace/CraftRoot
-
-              printf "arm32\n" | \
-              python3 -c "$(curl -fsSL https://invent.kde.org/packaging/craft/-/raw/master/setup/CraftBootstrap.py)" \
-                --prefix /workspace/CraftRoot
-            '
-
-      - name: Clone CraftMaster
-        run: |
-          rm -rf "$CRAFTMASTER_ROOT"
-
-          git clone \
-            --depth=1 \
-            https://invent.kde.org/packaging/craftmaster.git \
-            "$CRAFTMASTER_ROOT"
-
-      - name: Clone KDE Craft blueprints
-        run: |
-          rm -rf "$CRAFT_BLUEPRINTS_ROOT"
-
-          git clone \
-            --depth=1 \
-            https://invent.kde.org/packaging/craft-blueprints-kde.git \
-            "$CRAFT_BLUEPRINTS_ROOT"
-
-      - name: Show Craft configuration
-        run: |
-          docker run --rm \
-            -v "$GITHUB_WORKSPACE:/workspace" \
-            -w /workspace \
-            invent-registry.kde.org/sysadmin/ci-images/android-qt611 \
-            bash -lc '
-              set -eux
-
-              echo "=== CraftMaster ==="
-              python3 /workspace/craftmaster/CraftMaster.py --version
+              echo "=== ABI ==="
+              grep -E "^ABI[[:space:]]*=" \
+                "$CRAFT_ROOT/etc/CraftSettings.ini"
 
               echo
-              echo "=== CraftRoot ==="
-              find /workspace/CraftRoot -maxdepth 2 -type f \
-                \( -name "CraftSettings.ini" -o -name "BlueprintSettings.ini" \) \
-                -print
+              echo "=== Craft ==="
+              "$CRAFT_ROOT/bin/craft" --version
 
               echo
-              echo "=== Target ==="
-              echo "android-clang-arm32"
-            '
+              echo "=== Android environment ==="
+              echo "ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT:-}"
+              echo "ANDROID_NDK=${ANDROID_NDK:-}"
 
-      - name: Setup CraftMaster
-        run: |
-          docker run --rm \
-            -v "$GITHUB_WORKSPACE:/workspace" \
-            -w /workspace \
-            invent-registry.kde.org/sysadmin/ci-images/android-qt611 \
-            bash -lc '
-              set -eux
+              echo
+              echo "=== ARM32 compiler candidates ==="
 
-              python3 \
-                /workspace/craftmaster/CraftMaster.py \
-                --config /workspace/craft-ci-config.ini \
-                --target android-clang-arm32 \
-                --setup
-            '
-
-      - name: Build Okular dependencies
-        run: |
-          docker run --rm \
-            -v "$GITHUB_WORKSPACE:/workspace" \
-            -w /workspace \
-            invent-registry.kde.org/sysadmin/ci-images/android-qt611 \
-            bash -lc '
-              set -eux
-
-              python3 \
-                /workspace/craftmaster/CraftMaster.py \
-                --config /workspace/craft-ci-config.ini \
-                --target android-clang-arm32 \
-                -c \
-                --install-deps \
-                --options "[CodeSigning]Enabled=False" \
-                okular
+              find "${ANDROID_NDK:-/nonexistent}" \
+                -type f \
+                \( \
+                  -name "armv7a-linux-androideabi*-clang" \
+                  -o -name "arm-linux-androideabi-gcc" \
+                \) \
+                2>/dev/null | head -20 || true
             '
 
       - name: Build Okular
         run: |
           docker run --rm \
+            --user 0:0 \
+            -e HOME=/root \
             -v "$GITHUB_WORKSPACE:/workspace" \
             -w /workspace \
-            invent-registry.kde.org/sysadmin/ci-images/android-qt611 \
+            "$KDE_ANDROID_IMAGE" \
             bash -lc '
-              set -eux
+              set -euxo pipefail
 
-              python3 \
-                /workspace/craftmaster/CraftMaster.py \
-                --config /workspace/craft-ci-config.ini \
-                --target android-clang-arm32 \
-                -c \
+              export HOME=/root
+              export CRAFT_ROOT=/workspace/CraftRoot
+
+              source "$CRAFT_ROOT/craftenv.sh"
+
+              echo "========================================"
+              echo " Craft ABI"
+              echo "========================================"
+
+              grep -E "^ABI[[:space:]]*=" \
+                "$CRAFT_ROOT/etc/CraftSettings.ini"
+
+              echo
+              echo "========================================"
+              echo " Building Okular"
+              echo "========================================"
+
+              craft \
                 --no-cache \
                 --options "[CodeSigning]Enabled=False" \
                 --options "okular.srcDir=/workspace" \
@@ -244,7 +234,7 @@ jobs:
       - name: Locate APK
         if: always()
         run: |
-          echo "Searching for APK files..."
+          echo "=== APK/AAB files ==="
 
           find "$GITHUB_WORKSPACE" \
             -type f \
@@ -254,7 +244,58 @@ jobs:
             \) \
             -print
 
-      - name: Collect Craft logs
+      - name: Verify APK ABI
+        if: success()
+        run: |
+          set -eux
+
+          APK="$(find "$GITHUB_WORKSPACE" \
+            -type f \
+            -name "*.apk" \
+            | head -1)"
+
+          test -n "$APK"
+          test -f "$APK"
+
+          echo "APK: $APK"
+
+          sudo apt-get update
+          sudo apt-get install -y unzip
+
+          rm -rf /tmp/okular-apk-check
+          mkdir -p /tmp/okular-apk-check
+
+          unzip -l "$APK" | tee /tmp/okular-apk-list.txt
+
+          if ! grep -q "lib/armeabi-v7a/" /tmp/okular-apk-list.txt; then
+            echo "::error::APK does not contain armeabi-v7a native libraries."
+            exit 1
+          fi
+
+          echo
+          echo "========================================"
+          echo " armeabi-v7a confirmed"
+          echo "========================================"
+
+      - name: Collect APK
+        if: success()
+        run: |
+          rm -rf artifacts
+          mkdir -p artifacts/apk
+
+          find "$GITHUB_WORKSPACE" \
+            -type f \
+            -name "*.apk" \
+            -exec cp {} artifacts/apk/ \;
+
+          find "$GITHUB_WORKSPACE" \
+            -type f \
+            -name "*.aab" \
+            -exec cp {} artifacts/apk/ \;
+
+          ls -lah artifacts/apk
+
+      - name: Collect build logs
         if: always()
         run: |
           mkdir -p artifacts/logs
@@ -264,20 +305,6 @@ jobs:
             -path "*/logs/*" \
             -exec cp --parents {} artifacts/logs/ \; \
             || true
-
-      - name: Collect APK
-        if: success()
-        run: |
-          mkdir -p artifacts/apk
-
-          find "$GITHUB_WORKSPACE" \
-            -type f \
-            -name "*.apk" \
-            -exec cp {} artifacts/apk/ \;
-
-          find artifacts/apk \
-            -type f \
-            -print
 
       - name: Upload APK
         if: success()
