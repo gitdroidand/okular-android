@@ -1,4 +1,4 @@
-name: Okular Android ARMv7
+name: Okular Android ARMv7 (armeabi-v7a)
 
 on:
   workflow_dispatch:
@@ -9,492 +9,173 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: okular-android-armv7-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
-    name: Build Okular Android - armeabi-v7a
+    name: Build Okular APK (armeabi-v7a)
     runs-on: ubuntu-24.04
-
+    timeout-minutes: 360
     env:
-      CRAFT_ROOT: ${{ github.workspace }}/CraftRoot
-      KDE_ANDROID_IMAGE: invent-registry.kde.org/sysadmin/ci-images/android-qt611:latest
+      IMAGE: invent-registry.kde.org/sysadmin/ci-images/android-qt611:latest
+      BASE: /home/runner/okular-android
 
     steps:
-      - name: Checkout Okular
+      - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
-          submodules: recursive
 
       - name: Free disk space
         run: |
-          sudo rm -rf /usr/local/lib/android
-          sudo rm -rf /usr/share/dotnet
-          sudo rm -rf /opt/ghc
-          sudo rm -rf /usr/local/share/powershell
-          df -h
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+            /usr/local/share/powershell /usr/share/swift /opt/hostedtoolcache
+          sudo docker image prune -af || true
+          df -h /
 
-      - name: Install host dependencies
+      - name: Prepare directories
+        shell: bash
         run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            git \
-            curl \
-            wget \
-            unzip \
-            zip \
-            rsync \
-            ca-certificates \
-            build-essential \
-            ninja-build \
-            cmake \
-            pkg-config
+          mkdir -p "$BASE/craft" "$BASE/out"
+          chmod -R 777 "$BASE"
+          chmod -R a+rwX "$GITHUB_WORKSPACE"
 
-      - name: Pull KDE Android build image
+      - name: Pull KDE Android image
+        run: docker pull "$IMAGE"
+
+      - name: Write build script
+        shell: bash
         run: |
-          docker pull "$KDE_ANDROID_IMAGE"
-
-      - name: Prepare Craft directory
-        run: |
-          rm -rf "$CRAFT_ROOT"
-          mkdir -p "$CRAFT_ROOT"
-          sudo chmod -R a+rwx "$GITHUB_WORKSPACE"
-
-      - name: Bootstrap Craft for Android ARM32
-        run: |
-          docker run --rm \
-            --user 0:0 \
-            -e HOME=/root \
-            -v "$GITHUB_WORKSPACE:/workspace" \
-            -w /workspace \
-            "$KDE_ANDROID_IMAGE" \
-            bash -lc '
-              set -eo pipefail
-
-              export HOME=/root
-              export CRAFT_ROOT=/workspace/CraftRoot
-
-              echo "========================================"
-              echo " Android environment"
-              echo "========================================"
-
-              if [ -z "${ANDROID_SDK_ROOT:-}" ] && [ -n "${ANDROID_HOME:-}" ]; then
-                export ANDROID_SDK_ROOT="$ANDROID_HOME"
-              fi
-
-              if [ -z "${ANDROID_SDK_ROOT:-}" ]; then
-                if [ -d /opt/android-sdk ]; then
-                  export ANDROID_SDK_ROOT=/opt/android-sdk
-                elif [ -d /opt/android ]; then
-                  export ANDROID_SDK_ROOT=/opt/android
-                fi
-              fi
-
-              export ANDROID_HOME="$ANDROID_SDK_ROOT"
-
-              echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
-              echo "ANDROID_HOME=$ANDROID_HOME"
-
-              test -n "$ANDROID_SDK_ROOT"
-              test -d "$ANDROID_SDK_ROOT"
-
-              echo
-              echo "========================================"
-              echo " Android NDK"
-              echo "========================================"
-
-              if [ -z "${ANDROID_NDK:-}" ]; then
-                ANDROID_NDK="$(
-                  find /opt \
-                    -maxdepth 7 \
-                    -type d \
-                    \( \
-                      -name "android-ndk-*" \
-                      -o \
-                      -name "ndk-*" \
-                    \) \
-                    2>/dev/null \
-                    | sort -V \
-                    | tail -1 \
-                    || true
-                )"
-              fi
-
-              export ANDROID_NDK
-
-              echo "ANDROID_NDK=$ANDROID_NDK"
-
-              test -n "$ANDROID_NDK"
-              test -d "$ANDROID_NDK"
-
-              echo
-              echo "========================================"
-              echo " Python"
-              echo "========================================"
-
-              python3 --version
-              command -v python3
-
-              echo
-              echo "========================================"
-              echo " Craft Bootstrap"
-              echo "========================================"
-
-              curl -fsSL \
-                https://invent.kde.org/packaging/craft/-/raw/master/setup/CraftBootstrap.py \
-                -o /tmp/CraftBootstrap.py
-
-              python3 /tmp/CraftBootstrap.py \
-                --prefix "$CRAFT_ROOT" \
-                --use-defaults
-
-              echo
-              echo "========================================"
-              echo " Craft installation"
-              echo "========================================"
-
-              test -f "$CRAFT_ROOT/craft/bin/craft.py"
-              test -f "$CRAFT_ROOT/craft/craftenv.sh"
-              test -f "$CRAFT_ROOT/etc/CraftSettings.ini"
-
-              echo "Craft executable:"
-              ls -l "$CRAFT_ROOT/craft/bin/craft.py"
-
-              echo
-              echo "Craft environment:"
-              ls -l "$CRAFT_ROOT/craft/craftenv.sh"
-
-              echo
-              echo "========================================"
-              echo " Force Android ARM32"
-              echo "========================================"
-
-              SETTINGS="$CRAFT_ROOT/etc/CraftSettings.ini"
-
-              grep -E "^[[:space:]]*ABI[[:space:]]*=" "$SETTINGS" || true
-
-              sed -i \
-                "s|^[[:space:]]*ABI[[:space:]]*=.*|ABI = android-clang-arm32|" \
-                "$SETTINGS"
-
-              echo
-              echo "Final ABI:"
-              grep -E "^[[:space:]]*ABI[[:space:]]*=" "$SETTINGS"
-
-              test "$(
-                grep -E "^[[:space:]]*ABI[[:space:]]*=" "$SETTINGS" \
-                | head -1 \
-                | sed "s/.*=[[:space:]]*//"
-              )" = "android-clang-arm32"
-
-              echo
-              echo "========================================"
-              echo " Craft settings"
-              echo "========================================"
-
-              cat "$SETTINGS"
-
-              echo
-              echo "========================================"
-              echo " Bootstrap completed"
-              echo "========================================"
-            '
-
-      - name: Verify Craft and ARM32 environment
-        run: |
-          docker run --rm \
-            --user 0:0 \
-            -e HOME=/root \
-            -v "$GITHUB_WORKSPACE:/workspace" \
-            -w /workspace \
-            "$KDE_ANDROID_IMAGE" \
-            bash -lc '
-              set -eo pipefail
-
-              export HOME=/root
-              export CRAFT_ROOT=/workspace/CraftRoot
-
-              echo "========================================"
-              echo " Prepare Craft environment"
-              echo "========================================"
-
-              test -f "$CRAFT_ROOT/craft/craftenv.sh"
-
-              # IMPORTANT:
-              # craftenv.sh must be sourced WITHOUT "set -u".
-              #
-              # The current KDE Craft environment script checks
-              # CRAFT_PYTHON_BIN before defining it. With "set -u"
-              # that produces:
-              #
-              # CRAFT_PYTHON_BIN: unbound variable
-              #
-              # Therefore errexit/pipefail stay enabled, but nounset
-              # is intentionally disabled while sourcing Craft.
-
-              set +u
-              source "$CRAFT_ROOT/craft/craftenv.sh"
-              set -u
-
-              echo
-              echo "========================================"
-              echo " Craft environment loaded"
-              echo "========================================"
-
-              echo "craftRoot=$craftRoot"
-              echo "CRAFT_PYTHON_BIN=$CRAFT_PYTHON_BIN"
-              echo "KDEROOT=$KDEROOT"
-
-              echo
-              echo "========================================"
-              echo " Craft ABI"
-              echo "========================================"
-
-              grep -E "^[[:space:]]*ABI[[:space:]]*=" \
-                "$CRAFT_ROOT/etc/CraftSettings.ini"
-
-              test "$(
-                grep -E "^[[:space:]]*ABI[[:space:]]*=" \
-                  "$CRAFT_ROOT/etc/CraftSettings.ini" \
-                  | head -1 \
-                  | sed "s/.*=[[:space:]]*//"
-              )" = "android-clang-arm32"
-
-              echo
-              echo "========================================"
-              echo " Craft version"
-              echo "========================================"
-
-              command -v craft
-              craft --version
-
-              echo
-              echo "========================================"
-              echo " Android SDK / NDK"
-              echo "========================================"
-
-              echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
-              echo "ANDROID_HOME=$ANDROID_HOME"
-              echo "ANDROID_NDK=$ANDROID_NDK"
-
-              test -d "$ANDROID_SDK_ROOT"
-              test -d "$ANDROID_NDK"
-
-              echo
-              echo "========================================"
-              echo " ARM32 compiler"
-              echo "========================================"
-
-              ARM32_CLANG="$(
-                find "$ANDROID_NDK" \
-                  -type f \
-                  -name "armv7a-linux-androideabi*-clang" \
-                  | head -1
-              )"
-
-              test -n "$ARM32_CLANG"
-              test -x "$ARM32_CLANG"
-
-              echo "ARM32 clang:"
-              echo "$ARM32_CLANG"
-
-              "$ARM32_CLANG" --version
-
-              echo
-              echo "========================================"
-              echo " Craft ARM32 verification passed"
-              echo "========================================"
-            '
-
-      - name: Build Okular
-        run: |
-          docker run --rm \
-            --user 0:0 \
-            -e HOME=/root \
-            -v "$GITHUB_WORKSPACE:/workspace" \
-            -w /workspace \
-            "$KDE_ANDROID_IMAGE" \
-            bash -lc '
-              set -eo pipefail
-
-              export HOME=/root
-              export CRAFT_ROOT=/workspace/CraftRoot
-
-              echo "========================================"
-              echo " Load Craft"
-              echo "========================================"
-
-              # Do NOT use "set -u" here.
-              set +u
-              source "$CRAFT_ROOT/craft/craftenv.sh"
-              set -u
-
-              echo
-              echo "========================================"
-              echo " Verify ABI"
-              echo "========================================"
-
-              SETTINGS="$CRAFT_ROOT/etc/CraftSettings.ini"
-
-              ABI="$(
-                grep -E "^[[:space:]]*ABI[[:space:]]*=" "$SETTINGS" \
-                | head -1 \
-                | sed "s/.*=[[:space:]]*//"
-              )"
-
-              echo "ABI=$ABI"
-
-              test "$ABI" = "android-clang-arm32"
-
-              echo
-              echo "========================================"
-              echo " Craft"
-              echo "========================================"
-
-              command -v craft
-              craft --version
-
-              echo
-              echo "========================================"
-              echo " Search Okular blueprint"
-              echo "========================================"
-
-              craft --search okular
-
-              echo
-              echo "========================================"
-              echo " Build Okular"
-              echo "========================================"
-
-              craft \
-                --options "okular.srcDir=/workspace" \
-                okular
-
-              echo
-              echo "========================================"
-              echo " Package Okular APK"
-              echo "========================================"
-
-              craft --package okular
-
-              echo
-              echo "========================================"
-              echo " Craft build/package completed"
-              echo "========================================"
-            '
-
-      - name: Locate APK
-        if: always()
-        run: |
-          echo "========================================"
-          echo " APK / AAB files"
-          echo "========================================"
-
-          find "$GITHUB_WORKSPACE" \
-            -type f \
-            \( \
-              -name "*.apk" \
-              -o \
-              -name "*.aab" \
-            \) \
-            -print
-
-      - name: Verify APK ABI
-        if: success()
-        run: |
-          set -euo pipefail
-
-          APK="$(
-            find "$GITHUB_WORKSPACE" \
-              -type f \
-              -name "*.apk" \
-              | head -1
-          )"
-
-          test -n "$APK"
-          test -f "$APK"
-
-          echo "APK=$APK"
-
-          echo
-          echo "========================================"
-          echo " APK contents"
-          echo "========================================"
-
-          unzip -l "$APK" \
-            | tee /tmp/okular-apk-list.txt
-
-          echo
-          echo "========================================"
-          echo " Verify armeabi-v7a"
-          echo "========================================"
-
-          if ! grep -q "lib/armeabi-v7a/" \
-            /tmp/okular-apk-list.txt; then
-
-            echo "::error::APK does not contain lib/armeabi-v7a/"
-
-            exit 1
+          cat > "$BASE/build.sh" <<'SCRIPT'
+          #!/usr/bin/env bash
+          set -eo pipefail
+
+          export CRAFT_ROOT=/home/user/CraftRoot
+          SRC=/home/user/okular-src
+          OUT=/home/user/out
+
+          trap 'mkdir -p "$OUT/logs"; find "$CRAFT_ROOT/build" -maxdepth 6 \( -name CMakeError.log -o -name CMakeOutput.log \) -exec cp --parents {} "$OUT/logs/" \; 2>/dev/null || true' EXIT
+
+          git config --global --add safe.directory '*'
+
+          echo "::group::Environment"
+          echo "ANDROID_HOME=${ANDROID_HOME:-}"
+          echo "ANDROID_NDK=${ANDROID_NDK:-}"
+          echo "ANDROID_BUILD_TOOLS_REVISION=${ANDROID_BUILD_TOOLS_REVISION:-}"
+          python3 --version
+          df -h /home/user
+          echo "::endgroup::"
+
+          echo "::group::Craft bootstrap"
+          curl -fsSL https://invent.kde.org/packaging/craft/-/raw/master/setup/CraftBootstrap.py -o /tmp/CraftBootstrap.py
+          python3 /tmp/CraftBootstrap.py --prefix "$CRAFT_ROOT" --use-defaults
+          echo "::endgroup::"
+
+          echo "::group::Craft settings (ARM32 + MinSizeRel)"
+          python3 - <<'PY'
+          import configparser, os
+          p = os.path.join(os.environ["CRAFT_ROOT"], "etc", "CraftSettings.ini")
+          c = configparser.ConfigParser(interpolation=None)
+          c.optionxform = str
+          c.read(p)
+          for s in ("General", "Compile"):
+              if not c.has_section(s):
+                  c.add_section(s)
+          c["General"]["ABI"] = "android-clang-arm32"
+          c["Compile"]["BuildType"] = "MinSizeRel"
+          with open(p, "w") as f:
+              c.write(f)
+          PY
+          cat "$CRAFT_ROOT/etc/CraftSettings.ini"
+          echo "::endgroup::"
+
+          # craftenv.sh is not compatible with "set -u"
+          source "$CRAFT_ROOT/craft/craftenv.sh"
+
+          craft --version
+          craft --search okular || true
+
+          echo "::group::Build Okular"
+          craft --options "okular.srcDir=$SRC" okular
+          echo "::endgroup::"
+
+          echo "::group::Package Okular"
+          craft --options "okular.srcDir=$SRC" --package okular
+          echo "::endgroup::"
+
+          echo "::group::Locate APK"
+          APK_IN="$(find "$CRAFT_ROOT" -type f -name '*.apk' -not -path '*/build/*' \
+                    -printf '%T@ %p\n' | sort -n | tail -1 | cut -d' ' -f2-)"
+          test -n "$APK_IN"
+          echo "APK_IN=$APK_IN"
+          unzip -l "$APK_IN" | grep 'lib/' | head -50 || true
+          unzip -l "$APK_IN" | grep -q 'lib/armeabi-v7a/' \
+            || { echo "::error::APK has no lib/armeabi-v7a/"; exit 1; }
+          echo "::endgroup::"
+
+          echo "::group::Align + sign"
+          BT="$ANDROID_HOME/build-tools/${ANDROID_BUILD_TOOLS_REVISION:-none}"
+          [ -x "$BT/zipalign" ] || BT="$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)"
+          echo "build-tools: $BT"
+
+          KS=/tmp/signing.keystore
+          if [ -n "${KS_B64:-}" ]; then
+            echo "$KS_B64" | base64 -d > "$KS"
+            PASS="${KS_PASS:?KS_PASS missing}"
+            ALIAS="${KS_ALIAS:?KS_ALIAS missing}"
+            echo "Using keystore from secrets"
+          else
+            PASS=123456
+            ALIAS=mykey
+            keytool -genkey -noprompt -keystore "$KS" -keypass "$PASS" \
+              -dname "CN=None, OU=None, O=None, L=None, S=None, C=XY" \
+              -alias "$ALIAS" -keyalg RSA -keysize 2048 -validity 10000 -storepass "$PASS"
+            echo "Using a temporary debug keystore"
           fi
 
-          echo "armeabi-v7a native libraries found."
+          "$BT/zipalign" -p -f -v 4 "$APK_IN" /tmp/aligned.apk
+          "$BT/apksigner" sign --ks "$KS" --ks-key-alias "$ALIAS" \
+            --ks-pass "pass:$PASS" --key-pass "pass:$PASS" \
+            --out "$OUT/okular-armeabi-v7a.apk" /tmp/aligned.apk
+          "$BT/apksigner" verify --verbose "$OUT/okular-armeabi-v7a.apk"
+          ls -lah "$OUT"
+          echo "::endgroup::"
+          SCRIPT
+          chmod +x "$BASE/build.sh"
 
-      - name: Collect APK
-        if: success()
+      - name: Build, package and sign (Docker)
+        shell: bash
+        env:
+          KS_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KS_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KS_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
         run: |
-          rm -rf artifacts
-          mkdir -p artifacts/apk
-
-          find "$GITHUB_WORKSPACE" \
-            -type f \
-            -name "*.apk" \
-            -exec cp {} artifacts/apk/ \;
-
-          find "$GITHUB_WORKSPACE" \
-            -type f \
-            -name "*.aab" \
-            -exec cp {} artifacts/apk/ \;
-
-          echo "========================================"
-          echo " Collected artifacts"
-          echo "========================================"
-
-          ls -lah artifacts/apk
-
-      - name: Collect build logs
-        if: always()
-        run: |
-          mkdir -p artifacts/logs
-
-          find "$GITHUB_WORKSPACE" \
-            -type f \
-            -path "*/logs/*" \
-            -exec cp --parents {} artifacts/logs/ \; \
-            || true
-
-          find "$GITHUB_WORKSPACE" \
-            -type f \
-            \( \
-              -name "*.log" \
-              -o \
-              -name "CMakeError.log" \
-              -o \
-              -name "CMakeOutput.log" \
-            \) \
-            -exec cp --parents {} artifacts/logs/ \; \
-            || true
+          docker run --rm \
+            -e KS_B64 -e KS_PASS -e KS_ALIAS \
+            -v "$GITHUB_WORKSPACE:/home/user/okular-src" \
+            -v "$BASE/craft:/home/user/CraftRoot" \
+            -v "$BASE/out:/home/user/out" \
+            -v "$BASE/build.sh:/home/user/build.sh:ro" \
+            -w /home/user \
+            "$IMAGE" \
+            bash /home/user/build.sh 2>&1 | tee "$BASE/out/build.log"
 
       - name: Upload APK
         if: success()
         uses: actions/upload-artifact@v4
         with:
           name: okular-android-armeabi-v7a
-          path: artifacts/apk
+          path: /home/runner/okular-android/out/okular-armeabi-v7a.apk
           if-no-files-found: error
 
-      - name: Upload build logs
+      - name: Upload logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: okular-android-armv7-logs
-          path: artifacts/logs
+          path: |
+            /home/runner/okular-android/out/build.log
+            /home/runner/okular-android/out/logs
           if-no-files-found: ignore
